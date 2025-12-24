@@ -1,0 +1,102 @@
+
+Folder highlights
+Setup and Troubleshooting documentation confirms lead tracking functionality using GTM and an AppScript backend.
+
+ var NOTIFY_EMAIL = "ntsikastern@gmail.com";  
+  var SLACK_WEBHOOK_URL = "{INSERT_SLACK_SECRET_URL";  
+
+function doPost(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = JSON.parse(e.postData.contents);
+  
+  // 1. APPEND ROW TO SHEET
+  sheet.appendRow([
+    new Date(),
+    data.gclid,
+    data.firstName,
+    data.lastName,
+    data.email,
+    data.phone,
+    data.message,
+    data.keyword,
+    data.source,
+    data.location
+  ]);
+  
+  // 2. SEND NOTIFICATIONS (Wrapped in try/catch so one failure doesn't stop the others)
+  try {
+    sendEmailAlert(data);
+  } catch (err) {
+    console.log("Email Failed: " + err);
+  }
+
+  try {
+    sendSlackAlert(data);
+  } catch (err) {
+    console.log("Slack Failed: " + err);
+  }
+  
+  return ContentService.createTextOutput(JSON.stringify({"result":"success"})).setMimeType(ContentService.MimeType.JSON);
+}
+
+// HELPER: Send Email
+function sendEmailAlert(data) {
+  var subject = "🔥 New Lead: " + data.firstName + " " + data.lastName;
+  var body = 
+    "New Lead Received:\n\n" +
+    "Name: " + data.firstName + " " + data.lastName + "\n" +
+    "Email: " + data.email + "\n" +
+    "Phone: " + data.phone + "\n" +
+    "Location: " + data.location + "\n" +
+    "Source: " + data.source + "\n" +
+    "Keyword: " + data.keyword + "\n\n" +
+    "Message:\n" + data.message + "\n\n" +
+    "GCLID: " + data.gclid;
+
+  MailApp.sendEmail(NOTIFY_EMAIL, subject, body);
+}
+
+// HELPER: Send Slack Message
+function sendSlackAlert(data) {
+  if (SLACK_WEBHOOK_URL.indexOf("hooks.slack.com") === -1) return; // Skip if URL not set
+
+  var payload = {
+    "text": "*🔥 New Lead Received!*",
+    "blocks": [
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "*New Lead:* " + data.firstName + " " + data.lastName + "\n*Location:* " + data.location
+        }
+      },
+      {
+        "type": "section",
+        "fields": [
+          { "type": "mrkdwn", "text": "*Email:*\n" + data.email },
+          { "type": "mrkdwn", "text": "*Phone:*\n" + data.phone },
+          { "type": "mrkdwn", "text": "*Source:*\n" + (data.source || "Direct") },
+          { "type": "mrkdwn", "text": "*Keyword:*\n" + (data.keyword || "N/A") }
+        ]
+      },
+      {
+        "type": "divider"
+      },
+      {
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": "*Message:*\n" + data.message
+        }
+      }
+    ]
+  };
+
+  var options = {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify(payload)
+  };
+
+  UrlFetchApp.fetch(SLACK_WEBHOOK_URL, options);
+}
