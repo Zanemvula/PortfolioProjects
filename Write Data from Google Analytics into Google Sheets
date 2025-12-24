@@ -1,0 +1,73 @@
+function getGA4Data() {
+  const SPREADSHEET_NAME = 'XXXXXXX >>'; // Replace with Sheet Name
+  const PROPERTY_ID = 'XXXXXXX'; // Replace with your GA4 Property ID
+
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = spreadsheet.getSheetByName(SPREADSHEET_NAME);
+  
+  // Configue Metrics 
+  
+  const metrics = [
+    { name: 'sessions' },
+    { name: 'activeUsers' },
+    { name: 'bounceRate' },
+    { name: 'averageSessionDuration' } 
+  ];
+
+// Configue Dimensions NB** Ensure metrics and Dimensions are compatible. Check      using the campaign query url builder.
+
+  const dimensions = [
+    { name: 'date' },
+    { name: 'city' },
+    { name: 'country' },
+    { name: 'sessionGoogleAdsQuery' }, 
+    { name: 'sessionGoogleAdsKeyword' },
+    
+  ];
+
+// Configure the Start Date
+
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  
+// Configue your request to the API
+
+ const request = {
+  'metrics': metrics,
+  'dimensions': dimensions,
+  'dateRanges': [{
+    'startDate': '2025-05-01', // Adjust for your range
+    'endDate': 'today'
+  }]
+};
+
+  try {
+    const report = AnalyticsData.Properties.runReport(request, 'properties/' + PROPERTY_ID);
+
+    if (!report.rows || report.rows.length === 0) {
+      Logger.log('No rows returned.');
+      return;
+    }
+    
+    // Clear existing data before writing new data
+    sheet.clear();
+
+    const dimensionHeaders = report.dimensionHeaders.map(header => header.name);
+    const metricHeaders = report.metricHeaders.map(header => header.name);
+    const headers = [...dimensionHeaders, ...metricHeaders];
+    sheet.appendRow(headers);
+
+    const rows = report.rows.map(row => {
+      const dimensionValues = row.dimensionValues.map(value => value.value);
+      const metricValues = row.metricValues.map(value => value.value);
+      return [...dimensionValues, ...metricValues];
+    });
+
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
+    Logger.log('Report successfully updated.');
+
+  } catch (e) {
+    Logger.log('Failed with error: ' + e.message);
+  }
+}
