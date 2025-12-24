@@ -1,0 +1,171 @@
+/**
+ * ✅ Placement Blocker Template (Aggressive Whitelist Mode)
+ * ----------------------------------------------------------------------
+ * This script ensures all your Display and Video ads only run on placements
+ * explicitly listed in your APPROVED_DOMAINS list. All other automatic
+ * placements are pre-emptively blocked (excluded).
+ *
+ * Mode: Aggressive (Blocks domains even if they have 0 impressions).
+ * ----------------------------------------------------------------------
+ */
+
+function main() {
+	// --- ⚙️ USER CONFIGURATION: START HERE ---
+
+	// 1. Approved Placements List: 
+	//    Any placement that is an EXACT MATCH or a SUBDOMAIN of one of these 
+	//    strings will be KEPT. All others will be blocked.
+	//    ALWAYS include 'youtube.com' if you run YouTube campaigns.
+	var APPROVED_DOMAINS = [
+		// Start your custom whitelist below:
+		'your-homepage.com',
+		'partner-site-one.com',
+		'partner-site-two.com',
+		'property24.com',
+		'businesslive.co.za',
+		'youtube.com' 
+		// End your custom whitelist here
+	];
+	
+	// 2. Reporting and Limits
+	var DATE_RANGE = 'LAST_30_DAYS'; // Time range to look back for placement data.
+	var MAX_EXCLUSIONS_PER_RUN = 500; // Cap to prevent exceeding execution time limits.
+
+	// --- ⚙️ USER CONFIGURATION: END HERE ---
+
+	// ------------------------------------------------------------------
+	// --- CORE LOGIC - DO NOT EDIT BELOW THIS LINE ---
+	// ------------------------------------------------------------------
+
+	// Helper function to check if a URL is approved based on the list
+	function isApprovedPlacement(placementUrl, approvedDomains) {
+		if (!placementUrl) return false;
+		
+		// Normalize the URL: lower case and remove any potential path/query string 
+		var cleanUrl = placementUrl.toLowerCase().split(/[/?#]/)[0].trim();
+		
+		for (var i = 0; i < approvedDomains.length; i++) {
+			var approvedDomain = approvedDomains[i].toLowerCase();
+			
+			// 1. Check for exact domain match
+			if (cleanUrl === approvedDomain) {
+				return true;
+			}
+			
+			// 2. Check for subdomain match (e.g., 'blog.approved.com' ends with '.approved.com')
+			if (cleanUrl.endsWith('.' + approvedDomain)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	var excludedCount = 0;
+	var placementsToExclude = {}; // Stores: { domain: { url: '...', campaigns: ['id1', 'id2'] } }
+	
+	Logger.log('Starting Aggressive Placement Blocker Template...');
+
+	// Fetch all potential placements, regardless of impressions.
+	var report = AdsApp.report(
+		`SELECT Domain, CampaignId
+		 FROM AUTOMATIC_PLACEMENTS_PERFORMANCE_REPORT
+		 DURING ${DATE_RANGE}`
+	);
+
+	var rows = report.rows();
+	Logger.log(`Total potential placements analyzed: ${rows.totalNumRows}`);
+
+	while (rows.hasNext() && excludedCount < MAX_EXCLUSIONS_PER_RUN) {
+		var row = rows.next();
+		var placementUrl = row['Domain'];
+		var campaignId = row['CampaignId'];
+
+		// --- Step 1: Check Exclusion Criteria ---
+		
+		// A. Filter 1 (Quality Check - Strict Whitelist Logic)
+		var isApproved = isApprovedPlacement(placementUrl, APPROVED_DOMAINS);
+		var isLowQualityDomain = !isApproved; // If it's NOT approved, it's low quality
+		
+		// B. Filter 2 (Safety Check): Exclude internal Google domains AND Mobile Apps
+		var isMobileApp = placementUrl && (
+								placementUrl.startsWith('mobileapp::') || 
+								placementUrl.startsWith('adsenseformobileapps.com') ||
+								placementUrl.includes('play.google.com/store/apps/') || // Android Apps
+								placementUrl.includes('itunes.apple.com/') // iOS Apps
+							);
+
+		var isSafeDomain = placementUrl && placementUrl !== '--' && 
+							!isMobileApp && 
+							!placementUrl.startsWith('googlesyndication.com');
+
+
+		if (isLowQualityDomain && isSafeDomain) {
+			
+			if (!placementsToExclude[placementUrl]) {
+				placementsToExclude[placementUrl] = {
+					url: placementUrl,
+					campaigns: []
+				};
+				excludedCount++;
+			}
+			
+			// Track the campaign ID where this bad placement was found
+			if (placementsToExclude[placementUrl].campaigns.indexOf(campaignId) === -1) {
+				placementsToExclude[placementUrl].campaigns.push(campaignId);
+			}
+		}
+	}
+
+	// --- Step 2: Apply Exclusions ---
+	
+	if (Object.keys(placementsToExclude).length === 0) {
+		Logger.log('No placements met the domain quality exclusion criteria (after skipping apps).');
+		return;
+	}
+	
+	var totalPlacementsAdded = 0;
+	
+	// Aggregate unique campaign IDs that need negative placements
+	var uniqueCampaignIds = Object.values(placementsToExclude)
+							.flatMap(p => p.campaigns)
+							.filter((value, index, self) => self.indexOf(value) === index);
+
+	// Iterate over each unique campaign ID
+	for (var i = 0; i < uniqueCampaignIds.length; i++) {
+		var campaignId = uniqueCampaignIds[i];
+		var campaignIterator = AdsApp.campaigns().withIds([campaignId]).get();
+		
+		if (!campaignIterator.hasNext()) continue;
+		
+		var campaign = campaignIterator.next();
+		var campaignName = campaign.getName();
+		var domainsToBlock = Object.values(placementsToExclude)
+			.filter(p => p.campaigns.includes(campaignId))
+			.map(p => p.url);
+
+		for (var j = 0; j < domainsToBlock.length; j++) {
+			var finalExclusionUrl = domainsToBlock[j];
+			
+			try {
+				var operation = campaign.display().newPlacementBuilder().withUrl(finalExclusionUrl).exclude();
+				
+				if (operation.isSuccessful()) {
+					totalPlacementsAdded++;
+				} else {
+					// Minimal Logging: Only log failure details
+					Logger.log(`FAIL: Could not block ${finalExclusionUrl} in Campaign ${campaignName}. Errors: ${operation.getErrors().join(', ')}`);
+				}
+			} catch (e) {
+				// Log fatal exception failure
+				Logger.log(`FATAL FAIL: Failed to exclude ${finalExclusionUrl} in Campaign ${campaignName}. Reason: ${e.message}`);
+			}
+		}
+	}
+
+	// --- Final Summary ---
+	Logger.log('-------------------------------------------');
+	Logger.log(`Finished processing. Total unique domains identified for blocking: ${Object.keys(placementsToExclude).length}`);
+	Logger.log(`Total successful exclusions applied across all campaigns: ${totalPlacementsAdded}`);
+	Logger.log('Aggressive exclusion applied. Mobile apps were skipped.');
+	Logger.log('-------------------------------------------');
+}
